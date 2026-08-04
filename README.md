@@ -25,7 +25,7 @@ The Sci-Hub MCP Server provides a bridge between AI assistants and Sci-Hub's rep
 
 1. Clone the repository:
    ```
-   git clone https://github.com/JackKuo666/Sci-Hub-MCP-Server.git
+   git clone https://github.com/Nathan98000/Sci-Hub-MCP-Server.git
    cd Sci-Hub-MCP-Server
    ```
 
