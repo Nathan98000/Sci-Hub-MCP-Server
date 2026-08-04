@@ -1,136 +1,177 @@
 from scihub import SciHub
-import re
-import os
 import urllib3
 import requests
 
-# 禁用 HTTPS 证书验证警告
+# Disable HTTPS certificate verification warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+CROSSREF_API = "https://api.crossref.org/works"
+
+
 def create_scihub_instance():
-    """创建 SciHub 实例并配置"""
+    """Create and configure a SciHub instance"""
     sh = SciHub()
-    sh.timeout = 30  # 增加超时时间到 30 秒
+    sh.timeout = 30  # Increase timeout to 30 seconds
     return sh
 
-def search_paper_by_doi(doi):
-    """通过 DOI 在 Sci-Hub 上搜索论文"""
+
+def parse_crossref_item(item):
+    """Pull title / author / year out of a CrossRef work record"""
+    titles = item.get('title') or ['']
+    title = titles[0] if titles else ''
+
+    authors = []
+    for a in item.get('author', []):
+        name = ' '.join(p for p in (a.get('given'), a.get('family')) if p)
+        authors.append(name or a.get('name', ''))
+    author = ', '.join(n for n in authors if n)
+
+    year = ''
+    for key in ('published-print', 'published-online', 'issued', 'created'):
+        date_parts = (item.get(key) or {}).get('date-parts') or []
+        if date_parts and date_parts[0] and date_parts[0][0]:
+            year = str(date_parts[0][0])
+            break
+
+    return {'title': title, 'author': author, 'year': year}
+
+
+def get_crossref_metadata(doi):
+    """Look up a DOI's metadata on CrossRef (Sci-Hub itself returns none)"""
+    try:
+        # The DOI belongs in the URL path here, so it is not a query parameter.
+        response = requests.get(f"{CROSSREF_API}/{doi}", timeout=30)
+        if response.status_code == 200:
+            return parse_crossref_item(response.json()['message'])
+    except Exception as e:
+        print(f"CrossRef metadata error: {str(e)}")
+
+    return {'title': '', 'author': '', 'year': ''}
+
+
+def search_paper_by_doi(doi, metadata=None):
+    """Search for a paper on Sci-Hub by DOI"""
     sh = create_scihub_instance()
+    if metadata is None:
+        metadata = get_crossref_metadata(doi)
     try:
         result = sh.fetch(doi)
         return {
             'doi': doi,
             'pdf_url': result['url'],
             'status': 'success',
-            'title': result.get('title', ''),
-            'author': result.get('author', ''),
-            'year': result.get('year', '')
+            'title': metadata['title'],
+            'author': metadata['author'],
+            'year': metadata['year']
         }
     except Exception as e:
-        print(f"搜索出错: {str(e)}")
+        print(f"Search error: {str(e)}")
         return {
             'doi': doi,
             'status': 'not_found'
         }
 
+
 def search_paper_by_title(title):
-    """通过标题在 Sci-Hub 上搜索论文"""
-    # 由于 SciHub 包不支持 search 方法，我们改用 DOI 搜索
-    # 首先尝试从 CrossRef 获取 DOI
+    """Search for a paper on Sci-Hub by title"""
+    # The SciHub package has no search method, so we search by DOI instead.
+    # First try to get the DOI from CrossRef.
     try:
-        url = f"https://api.crossref.org/works?query.title={title}&rows=1"
-        response = requests.get(url)
+        params = {'query.title': title, 'rows': 1}
+        response = requests.get(CROSSREF_API, params=params, timeout=30)
         if response.status_code == 200:
             data = response.json()
             if data['message']['items']:
-                doi = data['message']['items'][0]['DOI']
-                return search_paper_by_doi(doi)
+                item = data['message']['items'][0]
+                doi = item['DOI']
+                return search_paper_by_doi(doi, metadata=parse_crossref_item(item))
     except Exception as e:
-        print(f"CrossRef 搜索出错: {str(e)}")
-    
+        print(f"CrossRef search error: {str(e)}")
+
     return {
         'title': title,
         'status': 'not_found'
     }
 
+
 def search_papers_by_keyword(keyword, num_results=10):
-    """通过关键词搜索论文，返回元数据列表"""
-    # 使用 CrossRef API 进行搜索
+    """Search papers by keyword and return a list of metadata"""
+    # Use the CrossRef API to search
     papers = []
     try:
-        url = f"https://api.crossref.org/works?query={keyword}&rows={num_results}"
-        response = requests.get(url)
+        params = {'query': keyword, 'rows': num_results}
+        response = requests.get(CROSSREF_API, params=params, timeout=30)
         if response.status_code == 200:
             data = response.json()
             for item in data['message']['items']:
                 doi = item.get('DOI')
                 if doi:
-                    result = search_paper_by_doi(doi)
+                    result = search_paper_by_doi(doi, metadata=parse_crossref_item(item))
                     if result['status'] == 'success':
                         papers.append(result)
     except Exception as e:
-        print(f"搜索出错: {str(e)}")
-    
+        print(f"Search error: {str(e)}")
+
     return papers
 
+
 def download_paper(pdf_url, output_path):
-    """下载论文 PDF"""
+    """Download the paper PDF"""
     sh = SciHub()
     try:
         sh.download(pdf_url, output_path)
         return True
     except Exception as e:
-        print(f"下载出错: {str(e)}")
+        print(f"Download error: {str(e)}")
         return False
 
 
 if __name__ == "__main__":
-    print("Sci-Hub 论文搜索测试\n")
+    print("Sci-Hub paper search test\n")
 
-    # 1. DOI 搜索测试
-    print("1. 通过 DOI 搜索论文")
-    test_doi = "10.1002/jcad.12075"  # 一篇神经科学相关的论文
+    # 1. DOI search test
+    print("1. Search for a paper by DOI")
+    test_doi = "10.1002/jcad.12075"  # an article from a counseling journal
     result = search_paper_by_doi(test_doi)
-    
+
     if result['status'] == 'success':
-        print(f"标题: {result['title']}")
-        print(f"作者: {result['author']}")
-        print(f"年份: {result['year']}")
+        print(f"Title: {result['title']}")
+        print(f"Author: {result['author']}")
+        print(f"Year: {result['year']}")
         print(f"PDF URL: {result['pdf_url']}")
-        
-        # 尝试下载论文
+
+        # Try to download the paper
         output_file = f"paper_{test_doi.replace('/', '_')}.pdf"
         if download_paper(result['pdf_url'], output_file):
-            print(f"论文已下载到: {output_file}")
+            print(f"Paper downloaded to: {output_file}")
         else:
-            print("论文下载失败")
+            print("Paper download failed")
     else:
-        print(f"未找到 DOI 为 {test_doi} 的论文")
+        print(f"No paper found with DOI {test_doi}")
 
-    # 2. 标题搜索测试
-    print("\n2. 通过标题搜索论文")
+    # 2. Title search test
+    print("\n2. Search for a paper by title")
     test_title = "Choosing Assessment Instruments for Posttraumatic Stress Disorder Screening and Outcome Research"
     result = search_paper_by_title(test_title)
-    
+
     if result['status'] == 'success':
         print(f"DOI: {result['doi']}")
-        print(f"作者: {result['author']}")
-        print(f"年份: {result['year']}")
+        print(f"Author: {result['author']}")
+        print(f"Year: {result['year']}")
         print(f"PDF URL: {result['pdf_url']}")
     else:
-        print(f"未找到标题为 '{test_title}' 的论文")
+        print(f"No paper found with title '{test_title}'")
 
-    # 3. 关键词搜索测试
-    print("\n3. 通过关键词搜索论文")
+    # 3. Keyword search test
+    print("\n3. Search for papers by keyword")
     test_keyword = "artificial intelligence medicine 2023"
     papers = search_papers_by_keyword(test_keyword, num_results=3)
-    
+
     for i, paper in enumerate(papers, 1):
-        print(f"\n论文 {i}:")
-        print(f"标题: {paper['title']}")
+        print(f"\nPaper {i}:")
+        print(f"Title: {paper['title']}")
         print(f"DOI: {paper['doi']}")
-        print(f"作者: {paper['author']}")
-        print(f"年份: {paper['year']}")
+        print(f"Author: {paper['author']}")
+        print(f"Year: {paper['year']}")
         if paper.get('pdf_url'):
             print(f"PDF URL: {paper['pdf_url']}")
-
